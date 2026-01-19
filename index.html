@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sunset Jib - 3D Action Sports Prototype</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #0d0f1a;
+      font-family: "Inter", system-ui, -apple-system, sans-serif;
+    }
+    canvas {
+      display: block;
+    }
+    .hint {
+      position: absolute;
+      left: 24px;
+      bottom: 24px;
+      color: rgba(255, 255, 255, 0.85);
+      font-size: 14px;
+      background: rgba(5, 8, 20, 0.5);
+      padding: 10px 14px;
+      border-radius: 12px;
+      backdrop-filter: blur(6px);
+    }
+    .title {
+      position: absolute;
+      top: 24px;
+      left: 24px;
+      color: rgba(255, 255, 255, 0.9);
+      font-size: 18px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+  </style>
+</head>
+<body>
+  <div class="title">Sunset Jib</div>
+  <div class="hint">WASD: balance & steer · Space: pop · Q/E: spin · R: reset</div>
+  <canvas id="game"></canvas>
+
+  <script type="module">
+    import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js";
+    import { OrbitControls } from "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/controls/OrbitControls.js";
+    import * as CANNON from "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js";
+
+    const canvas = document.querySelector("#game");
+    const scene = new THREE.Scene();
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 400);
+    camera.position.set(0, 6, 14);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enabled = false;
+
+    const clock = new THREE.Clock();
+
+    const sky = new THREE.Mesh(
+      new THREE.SphereGeometry(300, 32, 32),
+      new THREE.ShaderMaterial({
+        side: THREE.BackSide,
+        uniforms: {
+          topColor: { value: new THREE.Color("#f9c17b") },
+          middleColor: { value: new THREE.Color("#f472b6") },
+          bottomColor: { value: new THREE.Color("#3b82f6") },
+        },
+        vertexShader: `
+          varying vec3 vPos;
+          void main() {
+            vPos = position;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform vec3 topColor;
+          uniform vec3 middleColor;
+          uniform vec3 bottomColor;
+          varying vec3 vPos;
+          void main() {
+            float h = normalize(vPos).y * 0.5 + 0.5;
+            vec3 midBlend = mix(bottomColor, middleColor, smoothstep(0.0, 0.5, h));
+            vec3 skyColor = mix(midBlend, topColor, smoothstep(0.45, 1.0, h));
+            gl_FragColor = vec4(skyColor, 1.0);
+          }
+        `,
+      })
+    );
+    scene.add(sky);
+
+    const ambient = new THREE.AmbientLight(0xffffff, 0.45);
+    scene.add(ambient);
+
+    const sun = new THREE.DirectionalLight(0xfff1e8, 1.1);
+    sun.position.set(30, 50, 20);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.camera.top = 80;
+    sun.shadow.camera.bottom = -80;
+    sun.shadow.camera.left = -80;
+    sun.shadow.camera.right = 80;
+    scene.add(sun);
+
+    const fillLight = new THREE.DirectionalLight(0x7dd3fc, 0.4);
+    fillLight.position.set(-20, 15, -10);
+    scene.add(fillLight);
+
+    const world = new CANNON.World({
+      gravity: new CANNON.Vec3(0, -9.82, 0),
+    });
+    world.broadphase = new CANNON.SAPBroadphase(world);
+    world.allowSleep = true;
+
+    const defaultMaterial = new CANNON.Material("default");
+    const snowMaterial = new CANNON.Material("snow");
+    const railMaterial = new CANNON.Material("rail");
+
+    world.defaultContactMaterial = new CANNON.ContactMaterial(defaultMaterial, defaultMaterial, {
+      friction: 0.4,
+      restitution: 0.05,
+    });
+
+    world.addContactMaterial(
+      new CANNON.ContactMaterial(defaultMaterial, snowMaterial, {
+        friction: 0.12,
+        restitution: 0.0,
+      })
+    );
+
+    world.addContactMaterial(
+      new CANNON.ContactMaterial(defaultMaterial, railMaterial, {
+        friction: 0.02,
+        restitution: 0.0,
+      })
+    );
+
+    const snowGeometry = new THREE.PlaneGeometry(160, 220, 20, 20);
+    const snowMaterialVisual = new THREE.MeshStandardMaterial({
+      color: 0xf5f3ff,
+      roughness: 0.7,
+      metalness: 0.05,
+    });
+    const snowMesh = new THREE.Mesh(snowGeometry, snowMaterialVisual);
+    snowMesh.rotation.x = -Math.PI / 2.2;
+    snowMesh.receiveShadow = true;
+    scene.add(snowMesh);
+
+    const slopeBody = new CANNON.Body({
+      mass: 0,
+      shape: new CANNON.Plane(),
+      material: snowMaterial,
+    });
+    slopeBody.quaternion.setFromEuler(-Math.PI / 2.2, 0, 0);
+    world.addBody(slopeBody);
+
+    const rampMaterialVisual = new THREE.MeshStandardMaterial({
+      color: 0xb9fbc0,
+      roughness: 0.4,
+      metalness: 0.1,
+    });
+
+    const rampGroup = new THREE.Group();
+    scene.add(rampGroup);
+
+    const rampData = [
+      { position: new THREE.Vector3(0, 0.2, -25), rotation: -0.45, width: 12, length: 16 },
+      { position: new THREE.Vector3(-12, 0.2, -60), rotation: -0.5, width: 10, length: 14 },
+    ];
+
+    rampData.forEach(({ position, rotation, width, length }) => {
+      const ramp = new THREE.Mesh(
+        new THREE.BoxGeometry(width, 0.8, length),
+        rampMaterialVisual
+      );
+      ramp.position.copy(position);
+      ramp.rotation.x = rotation;
+      ramp.castShadow = true;
+      ramp.receiveShadow = true;
+      rampGroup.add(ramp);
+
+      const rampBody = new CANNON.Body({
+        mass: 0,
+        shape: new CANNON.Box(new CANNON.Vec3(width / 2, 0.4, length / 2)),
+        material: snowMaterial,
+      });
+      rampBody.position.set(position.x, position.y, position.z);
+      rampBody.quaternion.setFromEuler(rotation, 0, 0);
+      world.addBody(rampBody);
+    });
+
+    const railMaterialVisual = new THREE.MeshStandardMaterial({
+      color: 0x60a5fa,
+      roughness: 0.3,
+      metalness: 0.6,
+    });
+
+    const railConfigs = [
+      { position: new THREE.Vector3(6, 1.2, -15), rotation: 0.1, length: 20 },
+      { position: new THREE.Vector3(-8, 1.3, -45), rotation: -0.15, length: 18 },
+    ];
+
+    railConfigs.forEach(({ position, rotation, length }) => {
+      const rail = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.18, 0.18, length, 16),
+        railMaterialVisual
+      );
+      rail.rotation.z = Math.PI / 2;
+      rail.rotation.x = rotation;
+      rail.position.copy(position);
+      rail.castShadow = true;
+      rail.receiveShadow = true;
+      scene.add(rail);
+
+      const railBody = new CANNON.Body({
+        mass: 0,
+        shape: new CANNON.Cylinder(0.18, 0.18, length, 12),
+        material: railMaterial,
+      });
+      railBody.position.set(position.x, position.y, position.z);
+      railBody.quaternion.setFromEuler(rotation, 0, Math.PI / 2);
+      world.addBody(railBody);
+    });
+
+    const playerMaterial = new THREE.MeshStandardMaterial({
+      color: 0xff8fab,
+      roughness: 0.45,
+      metalness: 0.1,
+    });
+    const pantsMaterial = new THREE.MeshStandardMaterial({
+      color: 0x1f2937,
+      roughness: 0.6,
+    });
+    const accentMaterial = new THREE.MeshStandardMaterial({
+      color: 0xfbbf24,
+      roughness: 0.4,
+    });
+
+    const character = new THREE.Group();
+
+    const torso = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.8, 0.7), playerMaterial);
+    torso.position.y = 2.6;
+    torso.castShadow = true;
+    character.add(torso);
+
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.45, 24, 24), playerMaterial);
+    head.position.y = 3.7;
+    head.castShadow = true;
+    character.add(head);
+
+    const hip = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.6, 0.6), accentMaterial);
+    hip.position.y = 1.65;
+    hip.castShadow = true;
+    character.add(hip);
+
+    const leftUpperArm = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.2, 1.1, 16), playerMaterial);
+    leftUpperArm.position.set(-0.9, 2.7, 0.1);
+    leftUpperArm.rotation.z = Math.PI / 2.6;
+    leftUpperArm.castShadow = true;
+    character.add(leftUpperArm);
+
+    const rightUpperArm = leftUpperArm.clone();
+    rightUpperArm.position.set(0.9, 2.7, 0.1);
+    rightUpperArm.rotation.z = -Math.PI / 2.6;
+    character.add(rightUpperArm);
+
+    const leftLowerArm = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 1.0, 16), playerMaterial);
+    leftLowerArm.position.set(-1.4, 2.2, 0.2);
+    leftLowerArm.rotation.z = Math.PI / 2.3;
+    leftLowerArm.castShadow = true;
+    character.add(leftLowerArm);
+
+    const rightLowerArm = leftLowerArm.clone();
+    rightLowerArm.position.set(1.4, 2.2, 0.2);
+    rightLowerArm.rotation.z = -Math.PI / 2.3;
+    character.add(rightLowerArm);
+
+    const leftThigh = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.26, 1.2, 16), pantsMaterial);
+    leftThigh.position.set(-0.4, 1.1, 0.1);
+    leftThigh.castShadow = true;
+    character.add(leftThigh);
+
+    const rightThigh = leftThigh.clone();
+    rightThigh.position.set(0.4, 1.1, 0.1);
+    character.add(rightThigh);
+
+    const leftCalf = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 1.1, 16), pantsMaterial);
+    leftCalf.position.set(-0.4, 0.1, 0.15);
+    leftCalf.castShadow = true;
+    character.add(leftCalf);
+
+    const rightCalf = leftCalf.clone();
+    rightCalf.position.set(0.4, 0.1, 0.15);
+    character.add(rightCalf);
+
+    const snowboard = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.15, 3.4), accentMaterial);
+    snowboard.position.y = -0.35;
+    snowboard.castShadow = true;
+    snowboard.receiveShadow = true;
+    character.add(snowboard);
+
+    scene.add(character);
+
+    const playerBody = new CANNON.Body({
+      mass: 65,
+      position: new CANNON.Vec3(0, 4, 14),
+      linearDamping: 0.2,
+      angularDamping: 0.5,
+      material: defaultMaterial,
+    });
+    const bodyShape = new CANNON.Cylinder(0.5, 0.5, 2.8, 8);
+    playerBody.addShape(bodyShape, new CANNON.Vec3(0, 1.6, 0));
+    const boardShape = new CANNON.Box(new CANNON.Vec3(0.9, 0.1, 1.7));
+    playerBody.addShape(boardShape, new CANNON.Vec3(0, 0.1, 0));
+    world.addBody(playerBody);
+
+    const controlState = {
+      forward: false,
+      back: false,
+      left: false,
+      right: false,
+      spinLeft: false,
+      spinRight: false,
+      jumpQueued: false,
+    };
+
+    const keyMap = {
+      KeyW: "forward",
+      KeyS: "back",
+      KeyA: "left",
+      KeyD: "right",
+      KeyQ: "spinLeft",
+      KeyE: "spinRight",
+    };
+
+    window.addEventListener("keydown", (event) => {
+      if (event.code === "Space") {
+        controlState.jumpQueued = true;
+      }
+      if (event.code === "KeyR") {
+        resetPlayer();
+      }
+      if (keyMap[event.code]) {
+        controlState[keyMap[event.code]] = true;
+      }
+    });
+
+    window.addEventListener("keyup", (event) => {
+      if (keyMap[event.code]) {
+        controlState[keyMap[event.code]] = false;
+      }
+    });
+
+    const up = new THREE.Vector3(0, 1, 0);
+    const cameraOffset = new THREE.Vector3(0, 4.5, 10);
+    const targetPosition = new THREE.Vector3();
+    const cameraPosition = new THREE.Vector3();
+    const tempEuler = new CANNON.Vec3();
+    const tempQuaternion = new THREE.Quaternion();
+
+    function resetPlayer() {
+      playerBody.velocity.set(0, 0, 0);
+      playerBody.angularVelocity.set(0, 0, 0);
+      playerBody.position.set(0, 4, 14);
+      playerBody.quaternion.setFromEuler(0, Math.PI, 0);
+    }
+
+    function updatePhysics(delta) {
+      const forwardDir = new THREE.Vector3(0, 0, -1);
+      tempQuaternion.set(
+        playerBody.quaternion.x,
+        playerBody.quaternion.y,
+        playerBody.quaternion.z,
+        playerBody.quaternion.w
+      );
+      forwardDir.applyQuaternion(tempQuaternion);
+
+      const speed = playerBody.velocity.length();
+      const steerForce = 25;
+      const forwardForce = 60;
+
+      if (controlState.forward) {
+        playerBody.applyForce(
+          new CANNON.Vec3(forwardDir.x * forwardForce, 0, forwardDir.z * forwardForce),
+          playerBody.position
+        );
+      }
+      if (controlState.back) {
+        playerBody.applyForce(
+          new CANNON.Vec3(-forwardDir.x * forwardForce * 0.5, 0, -forwardDir.z * forwardForce * 0.5),
+          playerBody.position
+        );
+      }
+
+      const steerDirection = (controlState.left ? 1 : 0) + (controlState.right ? -1 : 0);
+      if (steerDirection !== 0) {
+        playerBody.angularVelocity.y += steerDirection * 0.04;
+        playerBody.applyForce(
+          new CANNON.Vec3(steerDirection * steerForce, 0, 0),
+          playerBody.position
+        );
+      }
+
+      const spinDirection = (controlState.spinLeft ? 1 : 0) + (controlState.spinRight ? -1 : 0);
+      if (spinDirection !== 0) {
+        playerBody.angularVelocity.y += spinDirection * 0.06;
+      }
+
+      if (controlState.jumpQueued) {
+        const isGrounded = Math.abs(playerBody.velocity.y) < 1.2;
+        if (isGrounded) {
+          playerBody.velocity.y = 6.2;
+        }
+        controlState.jumpQueued = false;
+      }
+
+      const roll = THREE.MathUtils.clamp(steerDirection * -0.35, -0.35, 0.35);
+      const pitch = THREE.MathUtils.clamp(speed * 0.015, -0.25, 0.25);
+      playerBody.quaternion.toEuler(tempEuler, "YXZ");
+      playerBody.quaternion.setFromEuler(pitch, tempEuler.y, roll, "YXZ");
+
+      world.step(1 / 60, delta, 3);
+    }
+
+    function syncCharacter(delta) {
+      character.position.set(playerBody.position.x, playerBody.position.y, playerBody.position.z);
+      character.quaternion.set(playerBody.quaternion.x, playerBody.quaternion.y, playerBody.quaternion.z, playerBody.quaternion.w);
+
+      const speed = playerBody.velocity.length();
+      const lean = THREE.MathUtils.clamp(playerBody.angularVelocity.y, -1, 1);
+      const bounce = Math.sin(clock.elapsedTime * 6) * 0.06 * Math.min(speed / 10, 1);
+
+      torso.rotation.x = -0.1 + speed * 0.02;
+      torso.rotation.z = lean * -0.25;
+      torso.position.y = 2.6 + bounce;
+
+      head.position.y = 3.7 + bounce * 0.5;
+      head.rotation.x = -torso.rotation.x * 0.6;
+
+      leftUpperArm.rotation.x = -0.3 - speed * 0.02;
+      rightUpperArm.rotation.x = -0.3 - speed * 0.02;
+      leftUpperArm.rotation.z = Math.PI / 2.8 + lean * 0.2;
+      rightUpperArm.rotation.z = -Math.PI / 2.8 + lean * 0.2;
+
+      leftLowerArm.rotation.x = -0.2 + Math.sin(clock.elapsedTime * 4) * 0.2;
+      rightLowerArm.rotation.x = -0.2 - Math.sin(clock.elapsedTime * 4) * 0.2;
+
+      const kneeBend = THREE.MathUtils.clamp(0.4 + speed * 0.05 - playerBody.velocity.y * 0.08, 0.2, 0.9);
+      leftThigh.rotation.x = -kneeBend;
+      rightThigh.rotation.x = -kneeBend;
+      leftCalf.rotation.x = kneeBend * 0.85;
+      rightCalf.rotation.x = kneeBend * 0.85;
+      leftCalf.position.y = 0.1 - kneeBend * 0.15;
+      rightCalf.position.y = 0.1 - kneeBend * 0.15;
+
+      snowboard.rotation.z = lean * 0.12;
+    }
+
+    function updateCamera() {
+      const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(character.quaternion);
+      targetPosition.copy(character.position).add(new THREE.Vector3(0, 2.5, 0));
+      cameraPosition.copy(targetPosition).add(cameraOffset.clone().applyQuaternion(character.quaternion));
+      cameraPosition.addScaledVector(forward, -2);
+      camera.position.lerp(cameraPosition, 0.08);
+      camera.lookAt(targetPosition);
+    }
+
+    function animate() {
+      const delta = Math.min(clock.getDelta(), 0.05);
+      updatePhysics(delta);
+      syncCharacter(delta);
+      updateCamera();
+      renderer.render(scene, camera);
+      requestAnimationFrame(animate);
+    }
+
+    resetPlayer();
+    animate();
+
+    window.addEventListener("resize", () => {
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+    });
+  </script>
+</body>
+</html>
